@@ -315,7 +315,7 @@ def swap_customizations(on_vehicle_returning=False):
     init_cache(namespace)
 
     vehicle = g_currentVehicle.item
-    if is_in_bootcamp() or not vehicle.isAlive:
+    if is_in_bootcamp() or vehicle is None or not vehicle.isAlive:
         return
 
     frequency_tracker.select(vehicle.intCD)
@@ -385,7 +385,7 @@ def on_inventory_changed(reason, diff):
     vehicle = g_currentVehicle.item
 
     # outfit on current vehicle was changed
-    if GUI_ITEM_TYPE.OUTFIT in diff and vehicle.intCD in diff[GUI_ITEM_TYPE.VEHICLE]:
+    if GUI_ITEM_TYPE.OUTFIT in diff and vehicle is not None and vehicle.intCD in diff[GUI_ITEM_TYPE.VEHICLE]:
         outfits = get_applied_outfit_descriptors(vehicle)
         namespace = get_cache_namespace()
         init_cache(namespace)
