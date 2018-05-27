@@ -281,16 +281,16 @@ def reclaim(current_vehicle, for_outfits=None):
         if vehicle.intCD == current_vehicle.intCD or not vehicle.isAlive:
             continue
 
+        must_demount = False
         for (season, outfit) in outfits.iteritems():
-            must_demount = False
-
             for item in outfit.items():
                 required_amount = get_required_count(item, for_outfits=for_outfits)
                 if item.intCD in available_items and available_items[item.intCD] < required_amount:
                     must_demount = True
                     available_items[item.intCD] += 1
 
-            if must_demount:
+        if must_demount:
+            for season in outfits.iterkeys():
                 reclaim_processor = OutfitApplier(vehicle, Outfit(), season).request()
                 reclaim_processors.append(reclaim_processor)
 
