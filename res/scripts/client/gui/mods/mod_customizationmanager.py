@@ -241,7 +241,7 @@ def get_required_count(item, for_outfits=None):
 
     if for_outfits is None:
         if item.itemTypeID == GUI_ITEM_TYPE.PAINT:
-            required_count = 9
+            required_count = 15
         elif item.itemTypeID == GUI_ITEM_TYPE.EMBLEM:
             required_count = 6
         elif item.itemTypeID == GUI_ITEM_TYPE.INSCRIPTION:
