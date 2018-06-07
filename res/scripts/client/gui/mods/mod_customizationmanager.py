@@ -227,11 +227,18 @@ frequency_tracker = FrequencyTracker()
 def init_cache(namespace):
     cached_outfits = cache_instance.get(namespace, {})
     vehicles = get_vehicles()
-    if len(cached_outfits.keys()) < len(vehicles.keys()):
-        not_indexed_vehicles = {int_CD: vehicle for (int_CD, vehicle) in vehicles.iteritems() if int_CD not in cached_outfits}
+    not_indexed_vehicles = {int_CD: vehicle for (int_CD, vehicle) in vehicles.iteritems() if int_CD not in cached_outfits}
+    if len(not_indexed_vehicles.keys()) > 0:
         new_cached_outfits = get_all_applied_outfit_descriptors(not_indexed_vehicles.itervalues())
         new_cached_outfits.update(cached_outfits)
         cache_instance.set(new_cached_outfits, namespace)
+
+
+def init_cache_backup(namespace):
+    init_cache(namespace)
+    backup_namespace = '%s_backup' % namespace
+    if cache_instance.get(backup_namespace) is None:
+        init_cache(backup_namespace)
 
 
 # get required number of this item fot the outfits
@@ -312,7 +319,7 @@ def gather_available_customizations():
 @block_concurrent
 def swap_customizations(on_vehicle_returning=False):
     namespace = get_cache_namespace()
-    init_cache(namespace)
+    init_cache_backup(namespace)
 
     vehicle = g_currentVehicle.item
     if is_in_bootcamp() or vehicle is None or not vehicle.isAlive:
@@ -388,7 +395,7 @@ def on_inventory_changed(reason, diff):
     if GUI_ITEM_TYPE.OUTFIT in diff and vehicle is not None and vehicle.intCD in diff[GUI_ITEM_TYPE.VEHICLE]:
         outfits = get_applied_outfit_descriptors(vehicle)
         namespace = get_cache_namespace()
-        init_cache(namespace)
+        init_cache_backup(namespace)
         cached_outfits = cache_instance.get(namespace, {})
         cached_outfits[vehicle.intCD] = outfits
         cache_instance.set(cached_outfits, namespace)
