@@ -18,12 +18,13 @@ from gui.shared.gui_items import GUI_ITEM_TYPE
 from gui.shared.gui_items.processors.common import OutfitApplier
 from gui.shared.gui_items.customization.outfit import Outfit
 from gui.shared.notifications import NotificationPriorityLevel
-from gui.Scaleform.daapi.view.lobby.customization.shared import OutfitInfo, getCustomPurchaseItems
+from gui.Scaleform.daapi.view.lobby.customization.shared import OutfitInfo, getCustomPurchaseItems, SEASON_TYPE_TO_IDX
 from gui.Scaleform.daapi.view.lobby.hangar.Hangar import Hangar
 from gui.Scaleform.daapi.view.lobby.hangar.TmenXpPanel import TmenXpPanel
 from gui.Scaleform.daapi.view.lobby.hangar.AmmunitionPanel import AmmunitionPanel
 from skeletons.gui.game_control import IBootcampController
 from skeletons.gui.system_messages import ISystemMessages
+from skeletons.gui.customization import ICustomizationService
 
 
 def run_before(module, func_name):
@@ -304,14 +305,11 @@ def reclaim(current_vehicle, for_outfits=None):
     return reclaim_processors
 
 
-@process('updateInventory')
-@block_concurrent
-def gather_available_customizations():
-    reclaim_processors = reclaim(g_currentVehicle.item)
-
-    # yielding an empty array will result in the waiting screen never hiding
-    if len(reclaim_processors) > 0:
-        yield reclaim_processors
+@dependency.replace_none_kwargs(customization=ICustomizationService)
+def refresh_customization_interface(customization=None):
+    context = customization.getCtx()
+    season_index = SEASON_TYPE_TO_IDX[context.currentSeason]
+    context.changeSeason(season_index)
 
 
 # removes outfits and applies cached outfits to current vehicle
@@ -380,11 +378,17 @@ def on_vehicle_changed(*args, **kwargs):
 
 # hook into the function for opening customization window
 @run_before(AmmunitionPanel, 'showCustomization')
+@process('updateInventory')
+@block_concurrent
 def on_before_customization_open(*args, **kwargs):
-    gather_available_customizations()
+    reclaim_processors = reclaim(g_currentVehicle.item)
+
+    # yielding an empty array will result in the waiting screen never hiding
+    if len(reclaim_processors) > 0:
+        yield reclaim_processors
+        refresh_customization_interface()
 
 
-# gets called when inventory changed
 def on_inventory_changed(reason, diff):
     if diff is None or GUI_ITEM_TYPE.VEHICLE not in diff or reason != CACHE_SYNC_REASON.CLIENT_UPDATE or is_in_bootcamp():
         return
