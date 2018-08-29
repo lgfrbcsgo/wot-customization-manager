@@ -1,127 +1,29 @@
 import BigWorld
-import cPickle
 import BattleReplay
-from os import path, makedirs
-from copy import deepcopy
-from functools import partial, wraps
+from functools import partial
 from helpers import dependency, i18n
-from threading import RLock
 from constants import CURRENT_REALM
 from CurrentVehicle import g_currentVehicle
 from skeletons.gui.shared import IItemsCache
 from items.components.c11n_constants import SeasonType
 from gui.SystemMessages import SM_TYPE
+from gui.customization.service import CustomizationService
+from gui.customization.context import CustomizationContext
 from gui.shared.items_cache import CACHE_SYNC_REASON
 from gui.shared.utils.requesters import REQ_CRITERIA
 from gui.shared.utils.decorators import process
 from gui.shared.gui_items import GUI_ITEM_TYPE
 from gui.shared.gui_items.processors.common import OutfitApplier
 from gui.shared.gui_items.customization.outfit import Outfit
-from gui.shared.notifications import NotificationPriorityLevel
-from gui.Scaleform.daapi.view.lobby.customization.shared import OutfitInfo, getCustomPurchaseItems, SEASON_TYPE_TO_IDX
-from gui.Scaleform.daapi.view.lobby.hangar.Hangar import Hangar
+from gui.Scaleform.daapi.view.lobby.customization.shared import SEASON_TYPE_TO_IDX, SEASON_IDX_TO_TYPE
 from gui.Scaleform.daapi.view.lobby.hangar.TmenXpPanel import TmenXpPanel
-from gui.Scaleform.daapi.view.lobby.hangar.AmmunitionPanel import AmmunitionPanel
 from skeletons.gui.game_control import IBootcampController
 from skeletons.gui.system_messages import ISystemMessages
 from skeletons.gui.customization import ICustomizationService
 
-
-def run_before(module, func_name):
-    def decorator(callback):
-        func = getattr(module, func_name)
-
-        @wraps(func)
-        def run_before_wrapper(*args, **kwargs):
-            callback(*args, **kwargs)
-            return func(*args, **kwargs)
-
-        setattr(module, func_name, run_before_wrapper)
-        return callback
-    return decorator
-
-
-def block_concurrent(gen):
-    outer = {'running': False}
-    lock = RLock()
-
-    @wraps(gen)
-    def ensure_wrapper(*args, **kwargs):
-        lock.acquire()
-        if outer['running']:
-            lock.release()
-            return
-        outer['running'] = True
-        lock.release()
-        try:
-            for val in gen(*args, **kwargs):
-                yield val
-        finally:
-            outer['running'] = False
-
-    return ensure_wrapper
-
-
-class Cache:
-    def __init__(self, dir_name, file_name):
-        self._cache_dir = Cache._make_dir(dir_name)
-        self._file_name = file_name
-        self._cache = {}
-        self._write_lock = RLock()
-
-    def get(self, namespace=None, default=None):
-        namespaced_cache = self._cache.get(namespace, None)
-        if namespaced_cache:
-            return deepcopy(namespaced_cache)
-        if not path.isfile(self._get_namespaced_file(namespace)):
-            return default
-        with open(self._get_namespaced_file(namespace), 'rb') as file:
-            self._cache[namespace] = cPickle.loads(file.read())
-            return self._cache[namespace] or default
-
-    def set(self, cache, namespace=None):
-        self._write_lock.acquire()
-        self._cache[namespace] = deepcopy(cache)
-        try:
-            with open(self._get_namespaced_file(namespace), 'wb') as file:
-                file.write(cPickle.dumps(self._cache[namespace]))
-        finally:
-            self._write_lock.release()
-
-    def _get_namespaced_file(self, namespace=None):
-        file_name = namespace + '.' + self._file_name if namespace is not None else self._file_name
-        return path.join(self._cache_dir, file_name)
-
-    @staticmethod
-    def _make_dir(dir_name):
-        wot_settings_file = unicode(BigWorld.wg_getPreferencesFilePath(), 'utf-8', errors='ignore')
-        wot_settings_dir = path.dirname(wot_settings_file)
-        cache_dir = path.join(wot_settings_dir, dir_name)
-        if not path.isdir(cache_dir):
-            makedirs(cache_dir)
-        return cache_dir
-
-
-class FrequencyTracker:
-    def __init__(self):
-        self._frequency_map = {}
-
-    def select(self, hashable):
-        self._frequency_map[hashable] = self._get_frequency(hashable) + 1
-
-    def sort_least_frequent(self, items, getter=None):
-        return sorted(items, key=self._get_key_function(getter))
-
-    def sort_most_frequent(self, items, getter=None):
-        return sorted(items, reverse=True, key=self._get_key_function(getter))
-
-    def _get_key_function(self, getter=None):
-        if getter is None:
-            return self._get_frequency
-        return lambda item: self._get_frequency(getter(item))
-
-    def _get_frequency(self, hashable):
-        return self._frequency_map.get(hashable, 0)
+from ModCustomizationManager.decorators import block_concurrent, run_before, run_before_async
+from ModCustomizationManager.cache import Cache
+from ModCustomizationManager.frequency_tracker import FrequencyTracker
 
 
 @dependency.replace_none_kwargs(bootcamp=IBootcampController)
@@ -141,9 +43,11 @@ def get_cache_namespace():
 def get_applied_outfit_seasons(vehicle):
     def filter_condition(season):
         outfit = vehicle.getOutfit(season)
+        if outfit is None:
+            return False
         style = vehicle.getStyledOutfit(season)
-        style_is_applied = style is not None and style.strCompactDescr == outfit.strCompactDescr
-        return outfit.strCompactDescr is not None and not style_is_applied
+        style_is_applied = style is not None and style.strCD == outfit.strCD
+        return outfit.strCD is not None and not style_is_applied
     return [season for season in SeasonType.COMMON_SEASONS if filter_condition(season)]
 
 
@@ -156,7 +60,7 @@ def get_applied_outfits(vehicle):
 # returns a dict from season ID to outfit descriptor
 def get_applied_outfit_descriptors(vehicle):
     filtered_seasons = get_applied_outfit_seasons(vehicle)
-    return {season: vehicle.getOutfit(season).strCompactDescr for season in filtered_seasons}
+    return {season: vehicle.getOutfit(season).strCD for season in filtered_seasons}
 
 
 def get_outfits_from_descriptors(outfit_descriptors):
@@ -164,7 +68,7 @@ def get_outfits_from_descriptors(outfit_descriptors):
 
 
 def get_descriptors_from_outfits(outfits):
-    return {season: outfit.strCompactDescr for (season, outfit) in outfits.iteritems()}
+    return {season: outfit.strCD for (season, outfit) in outfits.iteritems()}
 
 
 # map function over vehicles
@@ -244,21 +148,20 @@ def init_cache_backup(namespace):
 
 # get required number of this item fot the outfits
 # if for_outfits is None return number required to fully equip a vehicle
-def get_required_count(item, for_outfits=None):
+def get_required_count(item, for_outfits=None, season=SeasonType.SUMMER):
     required_count = 0
 
     if for_outfits is None:
         if item.itemTypeID == GUI_ITEM_TYPE.PAINT:
-            required_count = 15
+            required_count = 5
         elif item.itemTypeID == GUI_ITEM_TYPE.EMBLEM:
-            required_count = 6
+            required_count = 2
         elif item.itemTypeID == GUI_ITEM_TYPE.INSCRIPTION:
-            required_count = 6
+            required_count = 2
         elif item.itemTypeID == GUI_ITEM_TYPE.MODIFICATION:
-            required_count = 3
+            required_count = 1
         elif item.itemTypeID == GUI_ITEM_TYPE.CAMOUFLAGE:
-            for season in SeasonType.COMMON_SEASONS:
-                required_count += 3 if season in item.seasons else 0
+            required_count = 3 if season in item.seasons else 0
     else:
         for outfit in for_outfits.itervalues():
             for required_item in outfit.items():
@@ -269,13 +172,16 @@ def get_required_count(item, for_outfits=None):
 
 
 # remove as many outfits as necessary
-def reclaim(current_vehicle, for_outfits=None):
+@block_concurrent
+def reclaim(current_vehicle, for_outfits=None, season=SeasonType.SUMMER):
     vehicles = get_vehicles()
     # count customizations in inventory
     available_items = {int_CD: item.fullInventoryCount(current_vehicle) for (int_CD, item) in get_compatible_items(current_vehicle).iteritems()}
 
     # count customizations on current vehicle
-    for (season, outfit) in get_applied_outfits(current_vehicle).iteritems():
+    for (outfit_season, outfit) in get_applied_outfits(current_vehicle).iteritems():
+        if for_outfits is None and outfit_season != season:
+            continue
         for item in outfit.items():
             available_items[item.intCD] += 1
 
@@ -292,7 +198,7 @@ def reclaim(current_vehicle, for_outfits=None):
         must_demount = False
         for (season, outfit) in outfits.iteritems():
             for item in outfit.items():
-                required_amount = get_required_count(item, for_outfits=for_outfits)
+                required_amount = get_required_count(item, for_outfits=for_outfits, season=season)
                 if item.intCD in available_items and available_items[item.intCD] < required_amount:
                     must_demount = True
                     available_items[item.intCD] += 1
@@ -302,7 +208,8 @@ def reclaim(current_vehicle, for_outfits=None):
                 reclaim_processor = OutfitApplier(vehicle, Outfit(), season).request()
                 reclaim_processors.append(reclaim_processor)
 
-    return reclaim_processors
+    if len(reclaim_processors) > 0:
+        yield reclaim_processors
 
 
 @dependency.replace_none_kwargs(customization=ICustomizationService)
@@ -338,11 +245,8 @@ def swap_customizations(on_vehicle_returning=False):
 
     if len(must_apply) > 0:
         new_outfits = get_outfits_from_descriptors(new_outfits_descr)
-        reclaim_processors = reclaim(vehicle, for_outfits=new_outfits)
-
-        # yielding an empty array will result in the waiting screen never hiding
-        if len(reclaim_processors) > 0:
-            yield reclaim_processors
+        for val in reclaim(vehicle, for_outfits=new_outfits):
+            yield val
 
         system_messages = dependency.instance(ISystemMessages)
         if outfits_in_inventory(get_applied_outfits(vehicle), new_outfits, vehicle):
@@ -377,16 +281,16 @@ def on_vehicle_changed(*args, **kwargs):
 
 
 # hook into the function for opening customization window
-@run_before(AmmunitionPanel, 'showCustomization')
-@process('updateInventory')
-@block_concurrent
+@run_before_async(CustomizationService, '_CustomizationService__showCustomization')
 def on_before_customization_open(*args, **kwargs):
-    reclaim_processors = reclaim(g_currentVehicle.item)
+    for val in reclaim(g_currentVehicle.item, season=SeasonType.SUMMER):
+        yield val
 
-    # yielding an empty array will result in the waiting screen never hiding
-    if len(reclaim_processors) > 0:
-        yield reclaim_processors
-        refresh_customization_interface()
+
+@run_before_async(CustomizationContext, 'changeSeason')
+def on_before_season_change(_, season_idx, *args, **kwargs):
+    for val in reclaim(g_currentVehicle.item, season=SEASON_IDX_TO_TYPE[season_idx]):
+        yield val
 
 
 def on_inventory_changed(reason, diff):
